@@ -9,6 +9,9 @@ use App\Models\User;
 use Livewire\WithPagination;
 use Illuminate\Support\Facades\Auth;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Notification;
+use App\Notifications\VacacionAprobada;
+use App\Notifications\VacacionRechazada;
 
 class Requests extends Component
 {
@@ -63,6 +66,16 @@ class Requests extends Component
         $vacacion->Comentarios_Admin = $this->comentariosAdmin;
         $vacacion->save();
 
+        // Enviar notificación al trabajador
+        $trabajador = $vacacion->trabajador;
+        if ($trabajador && $trabajador->user) {
+            if ($this->accionModal === 'aprobar') {
+                $trabajador->user->notify(new VacacionAprobada($vacacion));
+            } elseif ($this->accionModal === 'rechazar') {
+                $trabajador->user->notify(new VacacionRechazada($vacacion));
+            }
+        }
+
         session()->flash('message', 'Solicitud de vacaciones ' . ($this->accionModal === 'aprobar' ? 'aprobada' : 'rechazada') . ' correctamente.');
         $this->dispatch('close-gestion-modal');
         $this->reset(['vacacionIdParaGestionar', 'comentariosAdmin', 'accionModal']);
@@ -70,29 +83,41 @@ class Requests extends Component
     
     public function getVacacionDetailsForModal($id)
     {
-        $vacacion = Vacacion::with(['trabajador:ID_Trabajador,NombreCompleto,Email', 'aprobador:id,name'])->find($id);
-        if (!$vacacion) {
-            \Illuminate\Support\Facades\Log::warning("getVacacionDetailsForModal: No se encontró Vacacion con ID: " . $id);
-            return null;
-        }
-
         try {
-            return [
+            \Illuminate\Support\Facades\Log::info("getVacacionDetailsForModal llamado con ID: " . $id);
+            
+            $vacacion = Vacacion::with(['trabajador:ID_Trabajador,NombreCompleto,Email', 'aprobador:id,name'])->find($id);
+            
+            if (!$vacacion) {
+                \Illuminate\Support\Facades\Log::warning("getVacacionDetailsForModal: No se encontró Vacacion con ID: " . $id);
+                return null;
+            }
+
+            \Illuminate\Support\Facades\Log::info("Vacacion encontrada: " . $vacacion->ID_Vacaciones);
+
+            $data = [
                 'id' => $vacacion->ID_Vacaciones,
                 'trabajador_nombre' => $vacacion->trabajador ? $vacacion->trabajador->NombreCompleto : 'N/A',
                 'trabajador_email' => $vacacion->trabajador ? $vacacion->trabajador->Email : 'N/A',
                 'fecha_inicio_formatted' => $vacacion->Fecha_Inicio ? $vacacion->Fecha_Inicio->format('d/m/Y') : 'N/A',
                 'fecha_fin_formatted' => $vacacion->Fecha_Fin ? $vacacion->Fecha_Fin->format('d/m/Y') : 'N/A',
-                'dias_solicitados' => $vacacion->Dias_Solicitados,
-                'estado_solicitud' => $vacacion->Estado_Solicitud,
+                'dias_solicitados' => $vacacion->Dias_Solicitados ?? 0,
+                'estado_solicitud' => $vacacion->Estado_Solicitud ?? 'Desconocido',
                 'fecha_solicitud_formatted' => $vacacion->created_at ? $vacacion->created_at->format('d/m/Y H:i') : 'N/A',
                 'aprobado_por_nombre' => $vacacion->aprobador ? $vacacion->aprobador->name : null,
                 'fecha_aprobacion_rechazo_formatted' => $vacacion->Fecha_Aprobacion_Rechazo ? $vacacion->Fecha_Aprobacion_Rechazo->format('d/m/Y H:i') : null,
-                'comentarios_admin' => $vacacion->Comentarios_Admin,
+                'comentarios_admin' => $vacacion->Comentarios_Admin ?? '',
             ];
+
+            \Illuminate\Support\Facades\Log::info("Datos preparados correctamente para ID: " . $id);
+            return $data;
+
         } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::error("Error en getVacacionDetailsForModal para Vacacion ID {$id}: " . $e->getMessage(), ['exception' => $e]);
-            return null; // Devuelve null para que el frontend muestre el error genérico.
+            \Illuminate\Support\Facades\Log::error("Error en getVacacionDetailsForModal para Vacacion ID {$id}: " . $e->getMessage(), [
+                'exception' => $e,
+                'trace' => $e->getTraceAsString()
+            ]);
+            return null;
         }
     }
 

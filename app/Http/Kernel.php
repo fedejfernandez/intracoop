@@ -67,8 +67,10 @@ class Kernel extends HttpKernel
         'throttle' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
     //    'verified' => \Illuminate\Auth\Middleware\EnsureEmailIsVerified::class, // Para verificación de email
 
-        // Tu middleware personalizado
+        // Middlewares personalizados para roles y permisos
         'admin' => \App\Http\Middleware\AdminMiddleware::class,
+        'role' => \App\Http\Middleware\RoleMiddleware::class,
+        'permission' => \App\Http\Middleware\PermissionMiddleware::class,
 
         // Middlewares de Jetstream (si lo estás usando)
         // Estos alias se registran automáticamente por Jetstream si están instalados

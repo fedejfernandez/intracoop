@@ -4,6 +4,7 @@ namespace App\Livewire\Admin\Trabajadores;
 
 use App\Models\Trabajador;
 use App\Models\User; // Importar el modelo User
+use App\Models\HistorialLaboral; // <-- Importar HistorialLaboral
 use Livewire\Component;
 use Livewire\WithFileUploads; // Para el campo de foto
 use Illuminate\Support\Facades\Storage; // Para manejar el almacenamiento de fotos
@@ -11,6 +12,9 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rules\Password as PasswordRule;
 use Illuminate\Support\Facades\DB; // Importar DB
 use Illuminate\Support\Facades\Config; // Importar Config
+use Carbon\Carbon;
+use Illuminate\Support\Facades\Log; // Import Log facade
+use Illuminate\Support\Facades\Auth; // <-- Importar Auth
 
 class CreateEditForm extends Component
 {
@@ -64,9 +68,22 @@ class CreateEditForm extends Component
     public $crearUsuarioAutomaticamente = false;
     public $newUserPassword = '';
     public $newUserPassword_confirmation = '';
+    public $disableCreateUserCheckbox = false;
+
+    // Para mostrar información calculada
+    public $antiguedadCalculada = '';
+    public $diasVacacionesCalculados = 14;
 
     protected function rules()
     {
+        Log::debug('CreateEditForm Rules Debug: Entered rules() method.');
+        Log::debug('CreateEditForm Rules Debug: trabajadorId = ' . $this->trabajadorId);
+        Log::debug('CreateEditForm Rules Debug: trabajador is set? ' . ($this->trabajador ? 'Yes' : 'No'));
+        if ($this->trabajador) {
+            Log::debug('CreateEditForm Rules Debug: trabajador->user_id = ' . $this->trabajador->user_id);
+        }
+        Log::debug('CreateEditForm Rules Debug: crearUsuarioAutomaticamente = ' . ($this->crearUsuarioAutomaticamente ? 'true' : 'false'));
+
         $rules = [
             'NombreCompleto' => 'required|string|max:255',
             'DNI_CUIL' => 'required|string|max:255|unique:trabajadores,DNI_CUIL,' . $this->trabajadorId . ',ID_Trabajador',
@@ -79,7 +96,6 @@ class CreateEditForm extends Component
             'Direccion' => 'nullable|string',
             'Foto' => 'nullable|image|max:2048', // Max 2MB, solo imágenes
             'Estado' => 'required|in:Activo,Inactivo,Licencia',
-            'DiasVacacionesAnuales' => 'required|integer|min:0',
             'NumeroLegajo' => 'nullable|string|max:255|unique:trabajadores,NumeroLegajo,' . $this->trabajadorId . ',ID_Trabajador',
             'TipoDocumento' => 'nullable|string|max:50',
             'Nacionalidad' => 'nullable|string|max:100',
@@ -102,13 +118,27 @@ class CreateEditForm extends Component
             $rules['newUserPassword'] = ['required', 'string', PasswordRule::min(8)->mixedCase()->numbers()->symbols(), 'confirmed'];
             $rules['user_id'] = 'nullable'; // Se ignora si se crea automáticamente
         } else {
+            // Si no se crea usuario automáticamente, pero estamos editando un trabajador
+            // que ya tiene un usuario asociado, su email debe ser único ignorando a ese mismo usuario.
+            if ($this->trabajadorId && $this->trabajador && $this->trabajador->user_id) {
+                $rules['Email'][] = 'unique:users,email,' . $this->trabajador->user_id;
+            }
+            // Si estamos creando un nuevo trabajador y asignando un usuario existente,
+            // el email del trabajador debe ser único en 'trabajadores'. La unicidad en 'users'
+            // ya está garantizada por el usuario existente. No se añade regla 'unique:users' aquí
+            // para evitar conflictos si el email del trabajador se está estableciendo y es diferente
+            // al del usuario existente seleccionado (lo cual podría ser un caso a refinar si se permite).
+
             $rules['user_id'] = ['nullable', function ($attribute, $value, $fail) {
-                if ($value === '') return;
+                if ($value === '') return; // Permite desasignar
+                if ($value === null) return; // Permite nulo si no se selecciona nada
                 if (!User::find($value)) {
                     $fail('El usuario seleccionado no es válido.');
                 }
             }];
         }
+
+        Log::debug('CreateEditForm Rules Debug: Email rules = ' . json_encode($rules['Email'] ?? []));
         return $rules;
     }
 
@@ -158,8 +188,65 @@ class CreateEditForm extends Component
             $this->Provincia = $this->trabajador->Provincia;
             $this->CodigoPostal = $this->trabajador->CodigoPostal;
             // End of initializing new fields
+
+            if ($this->trabajador->user_id) { // If already linked to a user
+                $this->crearUsuarioAutomaticamente = false; // Default to not creating another one
+                $this->disableCreateUserCheckbox = true;    // UI should disable the checkbox
+            }
         }
         $this->loadAvailableUsers();
+        $this->calcularDiasVacaciones();
+    }
+
+    /**
+     * Calculadora de días de vacaciones cuando cambia la fecha de ingreso
+     */
+    public function updatedFechaIngreso()
+    {
+        $this->calcularDiasVacaciones();
+    }
+
+    /**
+     * Calculadora de días de vacaciones cuando cambia el CCT
+     */
+    public function updatedCCT()
+    {
+        $this->calcularDiasVacaciones();
+    }
+
+    /**
+     * Calcula automáticamente los días de vacaciones y antigüedad
+     */
+    public function calcularDiasVacaciones()
+    {
+        if (!$this->FechaIngreso) {
+            $this->antiguedadCalculada = 'Sin fecha de ingreso';
+            $this->diasVacacionesCalculados = 14;
+            $this->DiasVacacionesAnuales = 14;
+            return;
+        }
+
+        try {
+            $fechaIngreso = Carbon::parse($this->FechaIngreso);
+            $fechaReferencia = Carbon::createFromDate(date('Y'), 12, 31);
+            $antiguedadAnios = $fechaIngreso->diffInYears($fechaReferencia);
+            
+            // Crear un trabajador temporal para usar el método de cálculo
+            $trabajadorTemporal = new Trabajador();
+            $trabajadorTemporal->FechaIngreso = $fechaIngreso;
+            $trabajadorTemporal->CCT = $this->CCT;
+            
+            $diasCalculados = $trabajadorTemporal->calcularDiasVacacionesAnuales();
+            
+            $this->antiguedadCalculada = $antiguedadAnios . ' año' . ($antiguedadAnios != 1 ? 's' : '');
+            $this->diasVacacionesCalculados = $diasCalculados;
+            $this->DiasVacacionesAnuales = $diasCalculados;
+            
+        } catch (\Exception $e) {
+            $this->antiguedadCalculada = 'Error en cálculo';
+            $this->diasVacacionesCalculados = 14;
+            $this->DiasVacacionesAnuales = 14;
+        }
     }
 
     public function updatedUserId($value)
@@ -198,15 +285,25 @@ class CreateEditForm extends Component
 
     public function save()
     {
-        if ($this->user_id === '') {
-            $this->user_id = null;
+        Log::debug('CreateEditForm Save Debug: User ID Selected = ' . $this->user_id);
+        Log::debug('CreateEditForm Save Debug: Crear Usuario Automáticamente = ' . ($this->crearUsuarioAutomaticamente ? 'true' : 'false'));
+        
+        $validatedData = $this->validate();
+
+        $originalData = [];
+        if ($this->trabajadorId) {
+            $trabajadorExistente = Trabajador::find($this->trabajadorId);
+            if ($trabajadorExistente) {
+                $originalData = [
+                    'Puesto' => $trabajadorExistente->Puesto,
+                    'Sector' => $trabajadorExistente->Sector,
+                    'Categoria' => $trabajadorExistente->Categoria,
+                    // Añadir 'Salario' si existe un campo directo en el modelo Trabajador y se gestiona aquí
+                ];
+            }
         }
 
-        $currentSelectedUserId = $this->crearUsuarioAutomaticamente ? null : $this->user_id;
-
-        $this->validate(); 
-
-        DB::transaction(function () use ($currentSelectedUserId) {
+        DB::transaction(function () use ($validatedData, $originalData) {
             $trabajadorData = [
                 'NombreCompleto' => $this->NombreCompleto,
                 'DNI_CUIL' => $this->DNI_CUIL,
@@ -218,7 +315,7 @@ class CreateEditForm extends Component
                 'Telefono' => $this->Telefono,
                 'Direccion' => $this->Direccion,
                 'Estado' => $this->Estado,
-                'DiasVacacionesAnuales' => $this->DiasVacacionesAnuales,
+                // DiasVacacionesAnuales se calculará automáticamente por el modelo
                 'NumeroLegajo' => $this->NumeroLegajo,
                 'TipoDocumento' => $this->TipoDocumento,
                 'Nacionalidad' => $this->Nacionalidad,
@@ -236,7 +333,7 @@ class CreateEditForm extends Component
                 'CodigoPostal' => $this->CodigoPostal,
             ];
 
-            $finalUserId = $currentSelectedUserId;
+            $currentSelectedUserId = $this->crearUsuarioAutomaticamente ? null : $this->user_id;
 
             if ($this->crearUsuarioAutomaticamente) {
                 $newUser = User::create([
@@ -245,10 +342,10 @@ class CreateEditForm extends Component
                     'password' => Hash::make($this->newUserPassword),
                     'role' => 'portal',
                 ]);
-                $finalUserId = $newUser->id;
+                $currentSelectedUserId = $newUser->id;
             }
             
-            $trabajadorData['user_id'] = $finalUserId;
+            $trabajadorData['user_id'] = $currentSelectedUserId;
 
             if ($this->Foto) {
                 if ($this->trabajador && $this->trabajador->Foto) {
@@ -257,14 +354,64 @@ class CreateEditForm extends Component
                 $trabajadorData['Foto'] = $this->Foto->store('trabajadores_fotos', 'public');
             }
 
-            if ($this->trabajador) {
-                $this->trabajador->update($trabajadorData);
-                session()->flash('message', 'Trabajador actualizado correctamente.');
+            if ($this->trabajadorId) {
+                // Actualizar Trabajador existente
+                $trabajador = Trabajador::findOrFail($this->trabajadorId);
+                $trabajador->update($trabajadorData);
+                session()->flash('message', 'Trabajador actualizado exitosamente.');
+
+                // Registrar cambios en el historial laboral
+                $cambios = [];
+                if (array_key_exists('Puesto', $originalData) && $originalData['Puesto'] !== $trabajador->Puesto) {
+                    $cambios['Puesto'] = ['anterior' => $originalData['Puesto'], 'nuevo' => $trabajador->Puesto];
+                }
+                if (array_key_exists('Sector', $originalData) && $originalData['Sector'] !== $trabajador->Sector) {
+                    $cambios['Sector'] = ['anterior' => $originalData['Sector'], 'nuevo' => $trabajador->Sector];
+                }
+                if (array_key_exists('Categoria', $originalData) && $originalData['Categoria'] !== $trabajador->Categoria) {
+                    $cambios['Categoria'] = ['anterior' => $originalData['Categoria'], 'nuevo' => $trabajador->Categoria];
+                }
+                // Añadir lógica para Salario si es necesario
+
+                if (!empty($cambios)) {
+                    $descripcionHistorial = "Actualización de datos:";
+                    foreach ($cambios as $campo => $valores) {
+                        $descripcionHistorial .= " {$campo} ('{$valores['anterior']}' a '{$valores['nuevo']}');";
+                    }
+
+                    HistorialLaboral::create([
+                        'trabajador_id' => $trabajador->ID_Trabajador,
+                        'registrado_por_usuario_id' => Auth::id(),
+                        'fecha_evento' => now(),
+                        'tipo_evento' => 'Actualización de Datos',
+                        'descripcion' => trim($descripcionHistorial),
+                        'puesto_anterior' => $cambios['Puesto']['anterior'] ?? null,
+                        'puesto_nuevo' => $cambios['Puesto']['nuevo'] ?? null,
+                        'sector_anterior' => $cambios['Sector']['anterior'] ?? null,
+                        'sector_nuevo' => $cambios['Sector']['nuevo'] ?? null,
+                        'categoria_anterior' => $cambios['Categoria']['anterior'] ?? null,
+                        'categoria_nueva' => $cambios['Categoria']['nuevo'] ?? null,
+                        // 'salario_anterior' => ..., 
+                        // 'salario_nuevo' => ...,
+                    ]);
+                }
+
             } else {
-                // Si es un nuevo trabajador, necesitamos la instancia para potencialmente asociar un usuario después
-                $newTrabajador = Trabajador::create($trabajadorData);
-                // No necesitamos hacer nada más con $newTrabajador aquí si user_id ya está en $trabajadorData
-                session()->flash('message', 'Trabajador creado correctamente.');
+                // Crear nuevo Trabajador
+                $trabajador = Trabajador::create($trabajadorData);
+                session()->flash('message', 'Trabajador creado exitosamente.');
+                // Registrar evento de creación en el historial
+                HistorialLaboral::create([
+                    'trabajador_id' => $trabajador->ID_Trabajador,
+                    'registrado_por_usuario_id' => Auth::id(),
+                    'fecha_evento' => $trabajador->FechaIngreso ?? now(), // Usar FechaIngreso si está disponible
+                    'tipo_evento' => 'Alta de Trabajador',
+                    'descripcion' => 'Trabajador creado en el sistema.',
+                    'puesto_nuevo' => $trabajador->Puesto,
+                    'sector_nuevo' => $trabajador->Sector,
+                    'categoria_nueva' => $trabajador->Categoria,
+                    // 'salario_nuevo' => $trabajador->Salario, // Si aplica
+                ]);
             }
         }); // Fin de DB::transaction
 

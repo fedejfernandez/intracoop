@@ -5,10 +5,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="csrf-token" content="{{ csrf_token() }}">
 
-        <title>{{ config('app.name', 'INTRACOOP') }}</title>
-
-        <link rel="icon" href="{{ asset('favicon.png') }}" type="image/x-icon">
-        <link rel="shortcut icon" href="{{ asset('favicon.png') }}" type="image/x-icon">
+        <title>{{ config('app.name', 'Laravel') }}</title>
 
         <!-- Fonts -->
         <link rel="preconnect" href="https://fonts.bunny.net">
@@ -44,5 +41,11 @@
         @stack('modals')
 
         @livewireScripts
+
+        <footer class="bg-white border-t border-gray-200 mt-auto">
+            <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8 text-center text-sm text-gray-500">
+                Cooperativa de Electricidad de Las Flores - Desarrollo: FedejFernandez
+            </div>
+        </footer>
     </body>
 </html>

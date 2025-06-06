@@ -11,17 +11,23 @@ export default {
         './resources/views/**/*.blade.php',
     ],
 
+    safelist: [
+        'bg-blue-100',
+        'text-blue-600',
+        'bg-green-100',
+        'text-green-600',
+        'bg-red-100',
+        'text-red-600',
+        'bg-purple-100',
+        'text-purple-600',
+        'bg-gray-100',
+        'text-gray-600',
+    ],
+
     theme: {
         extend: {
             fontFamily: {
                 sans: ['Figtree', ...defaultTheme.fontFamily.sans],
-            },
-            colors: {
-                'primary': '#6366F1',
-                'secondary': '#818CF8',
-                'tertiary': '#A78BFA',
-                'quaternary': '#C4B5FD',
-                'quinary': '#D8B4FE',
             },
         },
     },

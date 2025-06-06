@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use Illuminate\Console\Command;
 use App\Models\Trabajador;
 use App\Models\User;
+use App\Models\Role;
 use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
@@ -50,6 +51,7 @@ class ImportarNominaCommand extends Command
         'e-mail' => 'Email',
         'Categoria' => 'Categoria',
         'Función' => 'Puesto', // Mapeamos Función del Excel a Puesto en el modelo
+        'Centro de Costos' => 'Sector',
         'Fecha de Ingreso' => 'FechaIngreso',
         'Fecha Reconocida' => 'FechaReconocida',
         'C.U.I.L.' => 'DNI_CUIL_Excel', // Temporal para comparar con Nro Documento
@@ -67,6 +69,16 @@ class ImportarNominaCommand extends Command
             $this->error("El archivo no existe en la ruta especificada: {$filePath}");
             return 1;
         }
+
+        // Crear el rol 'portal' si no existe
+        $portalRole = Role::firstOrCreate(
+            ['name' => 'portal'],
+            [
+                'display_name' => 'Portal Trabajador',
+                'description' => 'Acceso al portal de autogestión para trabajadores.'
+            ]
+        );
+        $this->info("Rol '{$portalRole->name}' asegurado.");
 
         $this->info("Iniciando importación desde: {$filePath}");
 
@@ -179,7 +191,7 @@ class ImportarNominaCommand extends Command
             
             // Inicia la transacción aquí, fuera del try-catch principal del bucle,
             // para que cada fila sea su propia transacción.
-            DB::transaction(function () use ($rowData, $rowIndex, &$trabajadorData, &$createdCount, &$updatedCount, &$processedCount, &$errorCount) {
+            DB::transaction(function () use ($rowData, $rowIndex, &$trabajadorData, &$createdCount, &$updatedCount, &$processedCount, &$errorCount, $portalRole) {
                 // El try-catch interno manejará excepciones específicas de la fila sin detener todo el bucle,
                 // pero la transacción se revertirá para esta fila si hay un error de BD.
                 try {
@@ -190,87 +202,106 @@ class ImportarNominaCommand extends Command
                     // La validación de datos del $validator ya ocurrió antes, así que no necesitamos repetirla aquí.
                     // Si la validación falla, ya se hizo `continue`.
 
-                    $trabajador = null;
-                    if (!empty($trabajadorData['NumeroLegajo'])) {
-                        $trabajador = Trabajador::where('NumeroLegajo', $trabajadorData['NumeroLegajo'])->first();
-                    }
+                $trabajador = null;
+                if (!empty($trabajadorData['NumeroLegajo'])) {
+                    $trabajador = Trabajador::where('NumeroLegajo', $trabajadorData['NumeroLegajo'])->first();
+                }
 
-                    if (!$trabajador && !empty($trabajadorData['DNI_CUIL'])) {
-                        $trabajador = Trabajador::where('DNI_CUIL', $trabajadorData['DNI_CUIL'])->first();
-                        if ($trabajador && empty($trabajador->NumeroLegajo) && !empty($trabajadorData['NumeroLegajo'])) {
-                            $trabajador->NumeroLegajo = $trabajadorData['NumeroLegajo'];
-                        }
+                if (!$trabajador && !empty($trabajadorData['DNI_CUIL'])) {
+                    $trabajador = Trabajador::where('DNI_CUIL', $trabajadorData['DNI_CUIL'])->first();
+                     if ($trabajador && empty($trabajador->NumeroLegajo) && !empty($trabajadorData['NumeroLegajo'])) {
+                        $trabajador->update(['NumeroLegajo' => $trabajadorData['NumeroLegajo']]);
+                     }
+                }
+                
+                $datosParaGuardar = $trabajadorData;
+
+                // DEBUG: Imprimir el sector que se va a guardar
+                if (isset($datosParaGuardar['Sector'])) {
+                    $this->line("  DEBUG: Sector para guardar: " . $datosParaGuardar['Sector'] . " para Legajo: " . $datosParaGuardar['NumeroLegajo']);
+                } else {
+                    $this->line("  DEBUG: Sector no está seteado en datosParaGuardar para Legajo: " . $datosParaGuardar['NumeroLegajo']);
+                }
+
+                if ($trabajador) {
+                    // Si el email está duplicado y es diferente al actual, generar uno único
+                    if (isset($datosParaGuardar['Email']) && $datosParaGuardar['Email'] !== null && 
+                        $datosParaGuardar['Email'] !== $trabajador->Email &&
+                        Trabajador::where('Email', $datosParaGuardar['Email'])->where('ID_Trabajador', '!=', $trabajador->ID_Trabajador)->exists()) {
+                        $datosParaGuardar['Email'] = 'trabajador' . $datosParaGuardar['NumeroLegajo'] . '@cooperativa.com';
+                        $this->warn("  Email duplicado en actualización. Se generó uno nuevo: " . $datosParaGuardar['Email']);
                     }
                     
-                    $fillableFields = (new Trabajador())->getFillable();
-                    $datosParaGuardar = array_intersect_key($trabajadorData, array_flip($fillableFields));
-
-                    if ($trabajador) {
-                        if (isset($datosParaGuardar['Email']) && $datosParaGuardar['Email'] !== $trabajador->Email && $datosParaGuardar['Email'] !== null) {
-                            if (Trabajador::where('Email', $datosParaGuardar['Email'])->where('ID_Trabajador', '!=', $trabajador->ID_Trabajador)->exists()) {
-                                // Este error debería lanzar una excepción o ser manejado para que la transacción haga rollback
-                                throw new \Exception("El email " . $datosParaGuardar['Email'] . " ya está en uso por otro trabajador. Legajo: ".$datosParaGuardar['NumeroLegajo']);
-                            }
-                        }
-                        $trabajador->update($datosParaGuardar);
-                        $this->line("  Actualizado trabajador: " . $trabajador->NombreCompleto . " (Legajo: " . $trabajador->NumeroLegajo . ")");
-                        $updatedCount++;
-                    } else {
-                        if (empty($datosParaGuardar['DNI_CUIL'])) {
-                            throw new \Exception("DNI/CUIL es requerido para crear un nuevo trabajador. Legajo: ".$datosParaGuardar['NumeroLegajo']);
-                        }
-                        if (Trabajador::where('DNI_CUIL', $datosParaGuardar['DNI_CUIL'])->exists()) {
-                            throw new \Exception("Ya existe un trabajador con DNI/CUIL " . $datosParaGuardar['DNI_CUIL'] . ". No se puede crear duplicado para '". $datosParaGuardar['NombreCompleto']."' con Legajo '".$datosParaGuardar['NumeroLegajo']."'");
-                        }
-                        if (isset($datosParaGuardar['Email']) && $datosParaGuardar['Email'] !== null && Trabajador::where('Email', $datosParaGuardar['Email'])->exists()){
-                            throw new \Exception("El email " . $datosParaGuardar['Email'] . " ya está en uso por otro trabajador. No se puede crear duplicado para Legajo: ".$datosParaGuardar['NumeroLegajo']);
-                        }                    
-
-                        $trabajador = Trabajador::create($datosParaGuardar);
-                        $this->info("  Creado nuevo trabajador: " . $trabajador->NombreCompleto . " (Legajo: " . $trabajador->NumeroLegajo . ")");
-                        $createdCount++;
+                    $trabajador->update($datosParaGuardar);
+                    $this->info("  Actualizado trabajador: " . $trabajador->NombreCompleto . " (Legajo: " . $trabajador->NumeroLegajo . ")");
+                    $updatedCount++;
+                } else {
+                    // Validar DNI/CUIL duplicado
+                    if (Trabajador::where('DNI_CUIL', $datosParaGuardar['DNI_CUIL'])->exists()) {
+                        throw new \Exception("Ya existe un trabajador con DNI/CUIL " . $datosParaGuardar['DNI_CUIL'] . ". No se puede crear duplicado para '". $datosParaGuardar['NombreCompleto']."' con Legajo '".$datosParaGuardar['NumeroLegajo']."'");
                     }
 
-                    if (!empty($trabajador->Email) && !$trabajador->user_id) {
-                        $user = User::where('email', $trabajador->Email)->first();
-                        if (!$user) {
-                            if (User::where('email', $trabajador->Email)->exists()) {
-                                 $this->warn("    Advertencia: Ya existe un usuario con el email {$trabajador->Email} pero no está asociado a este trabajador. Verifique manualmente.");
-                                 // Considerar si esto debería ser un error que impida la transacción o solo una advertencia.
-                            } else {
-                                $password = Str::random(10);
-                                $user = User::create([
-                                    'name' => $trabajador->NombreCompleto,
-                                    'email' => $trabajador->Email,
-                                    'password' => Hash::make($password),
-                                    'role' => 'portal', 
-                                ]);
-                                $this->line("    Usuario creado para {$trabajador->Email} con contraseña temporal: {$password}");
-                            }
-                        }
-                        if ($user && !$trabajador->user_id) {
-                            $trabajador->user_id = $user->id;
-                            $trabajador->save(); // Esta es una operación de escritura, crucial para la transacción
-                            $this->line("    Usuario {$user->email} asociado al trabajador " . $trabajador->NombreCompleto);
-                        }
+                    // Si el email está duplicado, generar uno único basado en el legajo
+                    if (isset($datosParaGuardar['Email']) && $datosParaGuardar['Email'] !== null && Trabajador::where('Email', $datosParaGuardar['Email'])->exists()) {
+                        $datosParaGuardar['Email'] = 'trabajador' . $datosParaGuardar['NumeroLegajo'] . '@cooperativa.com';
+                        $this->warn("  Email duplicado. Se generó uno nuevo: " . $datosParaGuardar['Email']);
                     }
-                    $processedCount++;
 
-                } catch (\Illuminate\Database\QueryException $e) {
+                    $trabajador = Trabajador::create($datosParaGuardar);
+                    $this->info("  Creado nuevo trabajador: " . $trabajador->NombreCompleto . " (Legajo: " . $trabajador->NumeroLegajo . ")");
+                    // DEBUG: Imprimir el sector después de crear
+                    $this->line("  DEBUG: Sector guardado (creado): " . $trabajador->Sector . " para Legajo: " . $trabajador->NumeroLegajo);
+                    $createdCount++;
+                }
+
+                // Crear o actualizar usuario si hay email
+                if (!empty($trabajador->Email)) {
+                    $user = User::where('email', $trabajador->Email)->first();
+                    
+                    if (!$user) {
+                        $password = Str::random(10);
+                        $user = User::create([
+                            'name' => $trabajador->NombreCompleto,
+                            'email' => $trabajador->Email,
+                            'password' => Hash::make($password)
+                        ]);
+                        $this->info("    Usuario creado para {$trabajador->Email} con contraseña temporal: {$password}");
+
+                        // Probar métodos de Laratrust
+                        $laratrustMethodsStatus = $user->testLaratrustMethods();
+                        $this->info("    Estado de métodos Laratrust para nuevo usuario: " . json_encode($laratrustMethodsStatus));
+                    }
+
+                    if ($trabajador->user_id !== $user->id) {
+                        $trabajador->user_id = $user->id;
+                        $trabajador->save();
+                        $this->info("    Usuario {$trabajador->Email} asociado al trabajador {$trabajador->NombreCompleto}");
+                    }
+
+                    // Asignar rol de portal por defecto
+                    if (!$user->hasRole($portalRole->name)) {
+                        $user->addRole($portalRole);
+                        $this->info("    Rol '{$portalRole->name}' asignado a {$user->email}.");
+                    }
+                }
+
+                $processedCount++;
+
+            } catch (\Illuminate\Database\QueryException $e) {
                     // Los QueryExceptions harán rollback de la transacción automáticamente si no se manejan aquí.
                     // Pero es bueno loguearlos y contar el error.
                     $this->error("  Error de BD procesando fila " . ($rowIndex + 2) . ": " . $e->getMessage());
-                    $errorCount++;
+                $errorCount++;
                     // No es necesario `continue` aquí si el DB::transaction está fuera del catch general del bucle.
                     // Si la transacción falla, no se debe incrementar processedCount.
                     // El control del bucle exterior manejará el `continue` o el paso a la siguiente iteración.
                     // De hecho, si esto ocurre, la transacción ya habrá hecho rollback.
                     throw $e; // Relanzar para que DB::transaction lo maneje y haga rollback.
-                } catch (\Exception $e) {
+            } catch (\Exception $e) {
                     $this->error("  Error Inesperado procesando fila " . ($rowIndex + 2) . ": " . $e->getMessage());
-                    $errorCount++;
+                 $errorCount++;
                     throw $e; // Relanzar para que DB::transaction lo maneje y haga rollback.
-                }
+            }
             }); // Fin de DB::transaction
         }
 

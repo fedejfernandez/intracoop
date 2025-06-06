@@ -1,10 +1,10 @@
 <x-form-section submit="updateProfileInformation">
     <x-slot name="title">
-        {{ __('Información de Perfil') }}
+        {{ __('Profile Information') }}
     </x-slot>
 
     <x-slot name="description">
-        {{ __('Actualice la información de su cuenta y la dirección de correo electrónico.') }}
+        {{ __('Update your account\'s profile information and email address.') }}
     </x-slot>
 
     <x-slot name="form">
@@ -67,10 +67,10 @@
 
             @if (Laravel\Fortify\Features::enabled(Laravel\Fortify\Features::emailVerification()) && ! $this->user->hasVerifiedEmail())
                 <p class="text-sm mt-2">
-                    {{ __('Su dirección de correo electrónico no está verificada.') }}
+                    {{ __('Your email address is unverified.') }}
 
                     <button type="button" class="underline text-sm text-gray-600 hover:text-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" wire:click.prevent="sendEmailVerification">
-                        {{ __('Haga clic aquí para reenviar el correo de verificación.') }}
+                        {{ __('Click here to re-send the verification email.') }}
                     </button>
                 </p>
 
@@ -85,11 +85,11 @@
 
     <x-slot name="actions">
         <x-action-message class="me-3" on="saved">
-            {{ __('Guardado.') }}
+            {{ __('Saved.') }}
         </x-action-message>
 
         <x-button wire:loading.attr="disabled" wire:target="photo">
-            {{ __('Guardar') }}
+            {{ __('Save') }}
         </x-button>
     </x-slot>
 </x-form-section>

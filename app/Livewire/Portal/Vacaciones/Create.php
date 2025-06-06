@@ -6,7 +6,10 @@ use Livewire\Component;
 use Illuminate\Support\Facades\Auth;
 use App\Models\Vacacion;
 use App\Models\Trabajador;
+use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Notification;
+use App\Notifications\NuevaSolicitudVacacion;
 
 class Create extends Component
 {
@@ -53,12 +56,7 @@ class Create extends Component
         if (!$this->trabajador) return;
 
         $anoActual = Carbon::now()->year;
-        $diasYaAprobadosEsteAno = Vacacion::where('ID_Trabajador', $this->trabajador->ID_Trabajador)
-                                        ->where('Estado_Solicitud', 'Aprobada')
-                                        ->whereYear('Fecha_Inicio', $anoActual) // o Fecha_Fin, o ambas deben caer en el año
-                                        ->sum('Dias_Solicitados');
-        
-        $diasRestantes = $this->trabajador->DiasVacacionesAnuales - $diasYaAprobadosEsteAno;
+        $resumen = $this->trabajador->resumenVacaciones($anoActual);
 
         $diasSolicitadosAhora = 0;
         if ($this->fecha_inicio && $this->fecha_fin) {
@@ -69,7 +67,15 @@ class Create extends Component
             }
         }
 
-        $this->diasDisponiblesInfo = "Días anuales asignados: {$this->trabajador->DiasVacacionesAnuales}. Días ya aprobados este año ({$anoActual}): {$diasYaAprobadosEsteAno}. Días restantes: {$diasRestantes}. Solicitando ahora: {$diasSolicitadosAhora}.";
+        $this->diasDisponiblesInfo = sprintf(
+            "Año %d: %d días asignados | %d utilizados | %d pendientes | %d disponibles | Solicitando ahora: %d días",
+            $resumen['anio'],
+            $resumen['dias_asignados'],
+            $resumen['dias_utilizados'],
+            $resumen['dias_pendientes'],
+            $resumen['dias_libres'],
+            $diasSolicitadosAhora
+        );
     }
     
     private function calcularDiasLaborables($fechaInicio, $fechaFin)
@@ -109,17 +115,12 @@ class Create extends Component
             return;
         }
         
-        // Nueva validación de días disponibles
+        // Nueva validación de días disponibles usando los métodos del modelo
         $anoActual = Carbon::parse($this->fecha_inicio)->year; // Año de inicio de la solicitud actual
-        $diasYaAprobadosEsteAno = Vacacion::where('ID_Trabajador', $this->trabajador->ID_Trabajador)
-                                        ->where('Estado_Solicitud', 'Aprobada')
-                                        ->whereYear('Fecha_Inicio', $anoActual)
-                                        ->sum('Dias_Solicitados');
+        $verificacion = $this->trabajador->puedesolicitarVacaciones($diasSolicitados, $anoActual);
 
-        $diasDisponiblesReales = $this->trabajador->DiasVacacionesAnuales - $diasYaAprobadosEsteAno;
-
-        if ($diasSolicitados > $diasDisponiblesReales) {
-            $this->addError('fecha_fin', "No puedes solicitar {$diasSolicitados} días. Solo te quedan {$diasDisponiblesReales} días disponibles para el año {$anoActual} (Total anual: {$this->trabajador->DiasVacacionesAnuales}, Ya aprobados: {$diasYaAprobadosEsteAno}).");
+        if (!$verificacion['puede_solicitar']) {
+            $this->addError('fecha_fin', $verificacion['mensaje']);
             $this->actualizarInformacionDiasDisponibles(); // Actualizar info con error
             return;
         }
@@ -140,7 +141,11 @@ class Create extends Component
             // Podríamos añadirlo a Comentarios_Admin si se quiere unificar, pero no es ideal.
         }
 
-        Vacacion::create($datosVacacion);
+        $vacacion = Vacacion::create($datosVacacion);
+
+        // Enviar notificaciones a todos los administradores
+        $administradores = User::where('role', 'admin')->get();
+        Notification::send($administradores, new NuevaSolicitudVacacion($vacacion));
 
         session()->flash('message', 'Solicitud de vacaciones enviada correctamente.');
         return redirect()->route('portal.vacaciones.index');

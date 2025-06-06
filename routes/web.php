@@ -14,6 +14,7 @@ use App\Livewire\Admin\Trabajadores\Legajo as AdminTrabajadorLegajo;
 use App\Livewire\Admin\Users\Index as AdminUsersIndex;
 use App\Livewire\Admin\Users\Create as AdminUserCreate;
 use App\Livewire\Admin\Users\Edit as AdminUserEdit;
+use App\Livewire\Admin\Trabajadores\HistorialLaboral as AdminHistorialLaboral; // <-- IMPORTACIÓN RESTAURADA
 
 // Componentes para el Portal del Trabajador
 use App\Livewire\Portal\Dashboard as PortalDashboard;
@@ -21,6 +22,7 @@ use App\Livewire\Portal\Licencias\Index as PortalLicenciasIndex;
 use App\Livewire\Portal\Licencias\Create as PortalLicenciasCreate; // O Solicitar
 use App\Livewire\Portal\Vacaciones\Index as PortalVacacionesIndex;
 use App\Livewire\Portal\Vacaciones\Create as PortalVacacionesCreate; // O Solicitar
+use App\Livewire\Portal\Legajo as PortalLegajo;
 
 /*
 |--------------------------------------------------------------------------
@@ -36,7 +38,7 @@ use App\Livewire\Portal\Vacaciones\Create as PortalVacacionesCreate; // O Solici
 Route::get('/', function () {
     // Redirigir al login o a un dashboard si está autenticado
     if (auth()->check()) {
-        if (auth()->user()->isAdmin()) { // Asumiendo que tienes el método isAdmin() en tu modelo User
+        if (auth()->user()->hasRole('administrador')) { // Asumiendo que tienes el método isAdmin() en tu modelo User
             return redirect()->route('admin.dashboard');
         }
         return redirect()->route('portal.dashboard');
@@ -58,7 +60,7 @@ Route::get('/', function () {
      'verified', // Si usas verificación de email
  ])->group(function () {
      Route::get('/dashboard', function () {
-         if (auth()->user()->isAdmin()) {
+         if (auth()->user()->hasRole('administrador')) {
              return redirect()->route('admin.dashboard');
          }         return redirect()->route('portal.dashboard');
      })->name('dashboard'); // Esta es la ruta a la que Jetstream redirige por defecto después del login
@@ -80,8 +82,46 @@ Route::middleware(['auth:sanctum', config('jetstream.auth_session'), 'verified',
     Route::get('/trabajadores/crear', AdminTrabajadorCreate::class)->name('trabajadores.create');
     Route::get('/trabajadores/{trabajador}/editar', AdminTrabajadorEdit::class)->name('trabajadores.edit');
     Route::get('/trabajadores/{trabajador}/legajo', AdminTrabajadorLegajo::class)->name('trabajadores.legajo');
-    // La ruta para ver legajo podría ser un modal en index, una sección en edit, o una ruta separada:
-    // Route::get('/trabajadores/{trabajador}', AdminTrabajadorShow::class)->name('trabajadores.show');
+    Route::get('/trabajadores/{trabajador}/vacaciones', \App\Livewire\Admin\Trabajadores\VacacionesDashboard::class)->name('trabajadores.vacaciones');
+    Route::get('/trabajadores/{trabajadorId}/historial-laboral', AdminHistorialLaboral::class)->name('trabajadores.historial-laboral'); // <-- RUTA RESTAURADA Y PARÁMETRO CAMBIADO
+    Route::get('/trabajadores/pdf', function () {
+        $search = request('search');
+        $estado = request('estado');
+        $sector = request('sector');
+        $cct = request('cct');
+        $puesto = request('puesto');
+        
+        $query = \App\Models\Trabajador::query();
+        
+        if ($search) {
+            $query->where(function ($q) use ($search) {
+                $q->where('NombreCompleto', 'like', "%{$search}%")
+                  ->orWhere('DNI_CUIL', 'like', "%{$search}%")
+                  ->orWhere('Email', 'like', "%{$search}%")
+                  ->orWhere('NumeroLegajo', 'like', "%{$search}%");
+            });
+        }
+        
+        if ($estado) {
+            $query->where('Estado', $estado);
+        }
+        
+        if ($sector) {
+            $query->where('Sector', $sector);
+        }
+        
+        if ($cct) {
+            $query->where('CCT', $cct);
+        }
+        
+        if ($puesto) {
+            $query->where('Puesto', $puesto);
+        }
+        
+        $trabajadores = $query->orderBy('NombreCompleto')->get();
+        
+        return view('exports.trabajadores-pdf', compact('trabajadores'));
+    })->name('trabajadores.pdf');
 
     // CRUD Usuarios
     Route::get('/users', AdminUsersIndex::class)->name('users.index');
@@ -95,7 +135,15 @@ Route::middleware(['auth:sanctum', config('jetstream.auth_session'), 'verified',
 
     // Gestión de Solicitudes de Vacaciones
     Route::get('/solicitudes/vacaciones', AdminVacacionesRequests::class)->name('vacaciones.requests');
+    Route::get('/vacaciones/dashboard', \App\Livewire\Admin\Vacaciones\Dashboard::class)->name('vacaciones.dashboard');
+    Route::get('/vacaciones/calendario', \App\Livewire\Admin\Vacaciones\Calendario::class)->name('vacaciones.calendario');
     // Route::get('/solicitudes/vacaciones/{vacacion}', AdminVacacionProcess::class)->name('vacaciones.process');
+
+    // Gestión de Roles y Permisos
+    Route::get('/roles', \App\Livewire\Admin\Permissions\RoleManager::class)->name('roles.index');
+
+    // Gestión de Evaluaciones de Desempeño
+    Route::resource('evaluaciones-desempeno', App\Http\Controllers\Admin\EvaluacionDesempenoController::class);
 
     // Aquí podrías añadir más rutas para el administrador (configuraciones, reportes, etc.)
 });
@@ -121,6 +169,9 @@ Route::middleware(['auth:sanctum', config('jetstream.auth_session'), 'verified']
     Route::get('/vacaciones', PortalVacacionesIndex::class)->name('vacaciones.index');
     Route::get('/vacaciones/solicitar', PortalVacacionesCreate::class)->name('vacaciones.solicitar');
     // Route::get('/vacaciones/{vacacion}', PortalVacacionShow::class)->name('vacaciones.show');
+
+    // Ver Legajo Completo
+    Route::get('/legajo', PortalLegajo::class)->name('legajo.show');
 
     // Acceso al perfil del usuario (Jetstream ya lo provee en /user/profile)
     // No necesitas definirlo aquí si Jetstream está activo.
